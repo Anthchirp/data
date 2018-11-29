@@ -1,6 +1,7 @@
 from __future__ import absolute_import, division, print_function
 
 import contextlib
+import errno
 import hashlib
 import json
 import os
@@ -14,60 +15,69 @@ import py
 
 fcntl, msvcrt = None, None
 try:
-  import fcntl
+    import fcntl
 except ImportError:
-  pass
+    pass
 try:
-  import msvcrt
+    import msvcrt
 except ImportError:
-  pass
+    pass
 
 
 base_url = "http://dials.diamond.ac.uk/regression_data/"
 
-@contextlib.contextmanager
-def file_lock(file_handle):
-  """
-  Cross-platform file locking. Open a file for writing or appending. Then a
-  file lock can be obtained with:
 
-  with open(filename, 'w') as fh:
-    with file_lock(fh):
-      (..)
-  """
-  if not fcntl and not msvcrt:
-    raise NotImplementedError("File locking not supported on this platform")
-  lock = False
-  try:
-    if fcntl:
-      flags = fcntl.LOCK_EX
-      fcntl.lockf(file_handle, fcntl.LOCK_EX)
-    else:
-      file_handle.seek(0)
-      msvcrt.locking(file_handle, msvcrt.LK_LOCK, 1)
-      # note: says is only blocking for 10 sec
-    lock = True
-    yield
-  finally:
-    if lock:
-      if fcntl:
-        fcntl.lockf(file_handle, fcntl.LOCK_UN)
-      else:
-        file_handle.seek(0)
-        msvcrt.locking(file_handle, LK_UNLCK, 1)
+@contextlib.contextmanager
+def _file_lock(file_handle):
+    """
+    Cross-platform file locking. Open a file for writing or appending.
+    Then a file lock can be obtained with:
+
+    with open(filename, 'w') as fh:
+      with _file_lock(fh):
+        (..)
+    """
+    if not fcntl and not msvcrt:
+        raise NotImplementedError("File locking not supported on this platform")
+    lock = False
+    try:
+        if fcntl:
+            flags = fcntl.LOCK_EX
+            fcntl.lockf(file_handle, fcntl.LOCK_EX)
+        else:
+            file_handle.seek(0)
+            msvcrt.locking(file_handle, msvcrt.LK_LOCK, 1)
+            # note: says is only blocking for 10 sec
+        lock = True
+        yield
+    finally:
+        if lock:
+            if fcntl:
+                fcntl.lockf(file_handle, fcntl.LOCK_UN)
+            else:
+                file_handle.seek(0)
+                msvcrt.locking(file_handle, LK_UNLCK, 1)
+
 
 @contextlib.contextmanager
 def download_lock(target_dir):
-    if not os.path.exists(target_dir):
+    """
+    Creates a target directory and obtains a file lock on it so only a single
+    (cooperative) process can enter this context manager at any one time.
+    """
+    try:
         os.makedirs(target_dir)
+    except OSError as e:
+        if e.errno != errno.EEXIST:
+            raise
     with open(os.path.join(target_dir, ".lock"), "w") as fh:
-        with file_lock(fh):
+        with _file_lock(fh):
             yield
 
 
-def _download_to_file(url, file):
+def _download_to_file(url, filename):
     """Downloads a single URL to a file. Returns the file size.
-       Returns -1 if the downloaded file size does not match the expected file size
+       Returns False if the downloaded file size does not match the expected file size
     """
     socket = urllib2.urlopen(url)
     file_size = int(socket.info().getheader("Content-Length"))
@@ -75,7 +85,7 @@ def _download_to_file(url, file):
     received = 0
     block_size = 8192
     # Allow for writing the file immediately so we can empty the buffer
-    with open(file, "wb") as f:
+    with open(filename, "wb") as f:
         while True:
             block = socket.read(block_size)
             received += len(block)
@@ -84,8 +94,8 @@ def _download_to_file(url, file):
                 break
     socket.close()
 
-    if (file_size > 0) and (file_size != received):
-        return -1
+    if file_size > 0 and file_size != received:
+        return False
     return received
 
 
@@ -256,7 +266,7 @@ def fetch_test_data(
         if read_only:
             return False  # Must not download index.
         result = _download_to_file(index_url, index_file)
-        if result == -1:
+        if result is False:
             raise RuntimeError("Could not download file list.")
         with open(index_file) as fh:
             index = json.load(fh)
