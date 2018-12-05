@@ -8,11 +8,11 @@ from setuptools import setup, find_packages
 with open("README.rst") as readme_file:
     readme = readme_file.read()
 
-requirements = []
+requirements = ["pytest"]
 
 setup_requirements = ["pytest-runner"]
 
-test_requirements = ["pytest"]
+test_requirements = []
 
 setup(
     author="Markus Gerstel",
